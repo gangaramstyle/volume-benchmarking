@@ -49,6 +49,19 @@ class _MONAICoordinatePatchTransform:
             arr = image_obj.detach().cpu().numpy()
         else:
             arr = np.asarray(image_obj)
+
+        # Some NIfTI payloads can be stored as structured RGB datatypes.
+        # Convert those to float grayscale before shape normalization.
+        if hasattr(arr.dtype, "fields") and arr.dtype.fields:
+            channel_names = list(arr.dtype.fields.keys())
+            rgb = np.stack([arr[name] for name in channel_names], axis=-1).astype(np.float32, copy=False)
+            if rgb.ndim >= 4:
+                arr = rgb[..., :3].mean(axis=-1)
+            else:
+                arr = rgb.mean(axis=-1)
+
+        if arr.ndim == 4 and arr.shape[-1] in (3, 4):
+            arr = np.asarray(arr[..., :3], dtype=np.float32).mean(axis=-1)
         if arr.ndim == 4 and arr.shape[0] == 1:
             arr = arr[0]
         if arr.ndim != 3:
@@ -138,7 +151,12 @@ class _MONAIIterableDataset(IterableDataset):
 
         transform = Compose(
             [
-                LoadImaged(keys=["image"], image_only=False),
+                LoadImaged(
+                    keys=["image"],
+                    image_only=False,
+                    reader="NibabelReader",
+                    dtype=None,
+                ),
                 EnsureTyped(keys=["image"], track_meta=True),
                 _MONAICoordinatePatchTransform(
                     n_patches=self.cell_ctx.cell.n_patches,
