@@ -20,11 +20,14 @@ def _scan_id_for_row(row: dict[str, Any]) -> str:
     return f"scan_{digest}"
 
 
-def _ensure_nifti_path(row: dict[str, Any]) -> str:
+def _resolve_input_path(row: dict[str, Any]) -> str:
     nifti_path = str(row.get("nifti_path", "")).strip()
-    if not nifti_path:
-        raise ValueError("Catalog row missing required column 'nifti_path'")
-    return nifti_path
+    if nifti_path:
+        return nifti_path
+    series_path = str(row.get("series_path", "")).strip()
+    if series_path:
+        return series_path
+    raise ValueError("Catalog row missing required column: 'nifti_path' or 'series_path'")
 
 
 def _load_csv_like(path: Path) -> list[dict[str, Any]]:
@@ -53,7 +56,7 @@ def _load_parquet(path: Path) -> list[dict[str, Any]]:
 def load_catalog(path: str) -> list[VolumeRecord]:
     """Load volume records from csv/csv.gz/parquet catalog.
 
-    Required column: `nifti_path`
+    Required column: one of `nifti_path` or `series_path`
     Optional columns: `scan_id`, `modality`
     """
     catalog_path = Path(path).expanduser().resolve()
@@ -67,11 +70,11 @@ def load_catalog(path: str) -> list[VolumeRecord]:
 
     records: list[VolumeRecord] = []
     for row in rows:
-        nifti_path = _ensure_nifti_path(row)
+        resolved_path = _resolve_input_path(row)
         records.append(
             VolumeRecord(
                 scan_id=_scan_id_for_row(row),
-                nifti_path=nifti_path,
+                nifti_path=resolved_path,
                 modality=str(row.get("modality", "UNKNOWN") or "UNKNOWN").upper(),
             )
         )

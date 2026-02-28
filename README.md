@@ -27,8 +27,9 @@ uv pip install -e .[monai,medrs,test]
 ```
 
 ## Catalog format
-CSV/CSV.GZ/Parquet with required column:
-- `nifti_path`
+CSV/CSV.GZ/Parquet with at least one of:
+- `nifti_path` (direct file path), or
+- `series_path` (directory containing `.nii`/`.nii.gz`)
 
 Optional columns:
 - `scan_id`

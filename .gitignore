@@ -22,3 +22,6 @@ results/nsys/
 # Local temp/cache
 .cache/
 .tmp/
+
+# Local catalogs/data drops
+pmbb_catalog.csv.gz

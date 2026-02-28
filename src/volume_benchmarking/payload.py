@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -38,6 +39,24 @@ def _require_nibabel():
     return nib
 
 
+def resolve_nifti_path(path_or_series: str) -> str:
+    """Resolve a concrete NIfTI file path from a file or series directory."""
+    p = Path(path_or_series).expanduser()
+    if p.is_file():
+        return str(p)
+
+    if p.is_dir():
+        candidates = sorted(
+            [*p.glob("*.nii.gz"), *p.glob("*.nii")],
+            key=lambda f: f.stat().st_size if f.exists() else 0,
+            reverse=True,
+        )
+        if candidates:
+            return str(candidates[0])
+
+    raise FileNotFoundError(f"Could not resolve NIfTI file from path: {path_or_series}")
+
+
 @dataclass
 class VolumeContext:
     scan_id: str
@@ -56,7 +75,8 @@ class WindowParams:
 
 def load_nifti_context(scan_id: str, nifti_path: str) -> VolumeContext:
     nib = _require_nibabel()
-    img = nib.load(nifti_path)
+    resolved = resolve_nifti_path(nifti_path)
+    img = nib.load(resolved)
     try:
         img = nib.as_closest_canonical(img)
     except Exception:
