@@ -169,18 +169,27 @@ class _MedRSIterableDataset(IterableDataset):
 
         rng = np.random.default_rng(self.cell_ctx.runtime.seed + 500 + worker_id)
         records = self._worker_shard(self.cell_ctx.records, worker_id, num_workers)
+        failed_scan_ids: set[str] = set()
 
         decoder = _MedRSDecoder()
         use_cache = self.cell_ctx.cell.cache_state == "warm_pool"
         cache = _MedRSLRUCache(max_size=self.cell_ctx.runtime.pool_size) if use_cache else None
 
         while True:
-            rec = records[int(rng.integers(0, len(records)))]
+            eligible = [r for r in records if r.scan_id not in failed_scan_ids]
+            if not eligible:
+                raise RuntimeError(
+                    "MedRS backend could not decode any eligible records in this shard. "
+                    "All records failed at least once; consider a cleaner catalog subset."
+                )
+
+            rec = eligible[int(rng.integers(0, len(eligible)))]
             cached = cache.get(rec.scan_id) if cache is not None else None
             if cached is None:
                 try:
                     decoded = decoder.decode(scan_id=rec.scan_id, nifti_path=rec.nifti_path)
                 except Exception:
+                    failed_scan_ids.add(rec.scan_id)
                     continue
                 if cache is not None:
                     cache.put(rec.scan_id, decoded)
