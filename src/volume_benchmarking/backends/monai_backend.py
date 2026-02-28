@@ -9,7 +9,12 @@ import numpy as np
 
 from volume_benchmarking.backends.base import BackendAdapter, CellContext
 from volume_benchmarking.geometry import VolumeGeometry, spacing_from_affine
-from volume_benchmarking.payload import VolumeContext, _monai_resample_patch, build_asymmetric_sample
+from volume_benchmarking.payload import (
+    VolumeContext,
+    _monai_resample_patch,
+    build_asymmetric_sample,
+    resolve_nifti_path,
+)
 
 try:
     from torch.utils.data import IterableDataset
@@ -98,6 +103,17 @@ class _MONAIIterableDataset(IterableDataset):
         shard = [r for r in records if hash(r.scan_id) % num_workers == worker_id]
         return shard or records
 
+    @staticmethod
+    def _build_monai_rows(records) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        for rec in records:
+            try:
+                resolved = resolve_nifti_path(rec.nifti_path)
+            except Exception:
+                continue
+            rows.append({"image": resolved, "scan_id": rec.scan_id})
+        return rows
+
     def __iter__(self):
         try:
             import torch
@@ -113,7 +129,12 @@ class _MONAIIterableDataset(IterableDataset):
             worker_id, num_workers = worker.id, worker.num_workers
 
         records = self._worker_shard(self.cell_ctx.records, worker_id, num_workers)
-        data = [{"image": r.nifti_path, "scan_id": r.scan_id} for r in records]
+        data = self._build_monai_rows(records)
+        if not data:
+            raise RuntimeError(
+                "MONAI backend found no loadable NIfTI files for this worker shard. "
+                "Check that catalog paths resolve to .nii/.nii.gz files."
+            )
 
         transform = Compose(
             [
