@@ -61,6 +61,13 @@ vb bench run --matrix configs/matrix.fast.yaml --runtime configs/runtime.default
 vb bench run-cell --backend custom_fused --cache-state warm_pool --workers 4 --n-patches 64 --batch-size 4 --catalog /path/to/catalog.csv
 ```
 
+## Single-file sanity check (descriptive diagnostics)
+```bash
+vb bench sanity --backend custom_fused --catalog data/catalog_smoke_32.csv --record-index 0 --n-patches 16
+vb bench sanity --backend monai --catalog data/catalog_smoke_32.csv --record-index 0 --n-patches 16
+vb bench sanity --backend medrs --catalog data/catalog_smoke_32.csv --record-index 0 --n-patches 16
+```
+
 ## Summarize existing raw runs
 ```bash
 vb bench summarize --input results/raw/*.jsonl

@@ -22,6 +22,7 @@ from volume_benchmarking.backends.base import CellContext
 from volume_benchmarking.catalog import load_catalog
 from volume_benchmarking.contracts import BenchmarkCellConfig, BenchmarkRuntimeConfig, CellMetrics, WorkerMetrics
 from volume_benchmarking.matrix import expand_cells, load_matrix_config, matrix_hash
+from volume_benchmarking.payload import load_nifti_context, resolve_nifti_path
 from volume_benchmarking.profiling import RuntimeProfiler
 
 
@@ -343,6 +344,61 @@ def _write_summary_markdown(path: Path, rows: list[dict[str, Any]], run_id: str)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _select_record(records, record_index: int, scan_id: str | None):
+    if scan_id:
+        for rec in records:
+            if str(rec.scan_id) == str(scan_id):
+                return rec
+        raise RuntimeError(f"No record found with scan_id='{scan_id}'")
+    if not records:
+        raise RuntimeError("Catalog is empty")
+    idx = int(record_index) % len(records)
+    return records[idx]
+
+
+def _shape_of(value: Any) -> list[int] | None:
+    shape = getattr(value, "shape", None)
+    if shape is None:
+        return None
+    try:
+        return [int(v) for v in shape]
+    except Exception:
+        return None
+
+
+def _validate_sample_contract(sample: dict[str, Any], n_patches: int) -> dict[str, Any]:
+    required = [
+        "patches_a",
+        "patches_b",
+        "rel_coords_a_mm",
+        "rel_coords_b_mm",
+        "anchor_delta_mm_a_frame",
+        "rotation_b_euler_deg",
+        "rotation_b_matrix",
+        "meta",
+    ]
+    missing = [k for k in required if k not in sample]
+    checks: dict[str, Any] = {
+        "missing_keys": missing,
+        "has_all_required_keys": len(missing) == 0,
+        "shapes": {k: _shape_of(sample.get(k)) for k in required if k != "meta"},
+    }
+    expected = {
+        "patches_a": [int(n_patches), 1, 16, 16],
+        "patches_b": [int(n_patches), 1, 16, 16],
+        "rel_coords_a_mm": [int(n_patches), 3],
+        "rel_coords_b_mm": [int(n_patches), 3],
+        "anchor_delta_mm_a_frame": [3],
+        "rotation_b_euler_deg": [3],
+        "rotation_b_matrix": [3, 3],
+    }
+    checks["shape_matches"] = {
+        k: checks["shapes"].get(k) == v for k, v in expected.items()
+    }
+    checks["all_shapes_match"] = all(checks["shape_matches"].values())
+    return checks
+
+
 def summarize_raw_metrics(input_patterns: list[str], output_root: str = ".") -> tuple[Path, Path]:
     files: list[Path] = []
     for pat in input_patterns:
@@ -394,6 +450,68 @@ def summarize_raw_metrics(input_patterns: list[str], output_root: str = ".") -> 
     _write_summary_csv(csv_path, rows)
     _write_summary_markdown(md_path, rows, run_id=run_id)
     return csv_path, md_path
+
+
+def run_sanity_check(
+    *,
+    backend: str,
+    catalog: str,
+    runtime_path: str | None,
+    record_index: int,
+    scan_id: str | None,
+    n_patches: int,
+    cache_state: str,
+) -> dict[str, Any]:
+    runtime = _load_runtime_config(runtime_path, catalog_override=catalog)
+    records = load_catalog(runtime.catalog_path)
+    rec = _select_record(records, record_index=record_index, scan_id=scan_id)
+
+    resolved_path = resolve_nifti_path(rec.nifti_path)
+    ctx = load_nifti_context(scan_id=rec.scan_id, nifti_path=rec.nifti_path)
+
+    cell = BenchmarkCellConfig(
+        backend=backend,
+        cache_state=cache_state,
+        workers=0,
+        n_patches=int(n_patches),
+        batch_size=1,
+        warmup_batches=0,
+        timed_batches=1,
+    )
+    backend_impl = make_backend(cell.backend, records=[rec], runtime=runtime)
+    cell_ctx = CellContext(cell=cell, runtime=runtime, records=[rec])
+    backend_impl.prepare(cell_ctx)
+
+    sample_start = time.perf_counter()
+    dataset = backend_impl.build_dataset(cell_ctx)
+    sample = next(iter(dataset))
+    sample_elapsed_ms = (time.perf_counter() - sample_start) * 1000.0
+    backend_impl.teardown()
+
+    contract = _validate_sample_contract(sample, n_patches=n_patches)
+    meta = sample.get("meta", {}) if isinstance(sample, dict) else {}
+
+    return {
+        "backend": backend,
+        "catalog_path": runtime.catalog_path,
+        "record_index": int(record_index),
+        "selected_scan_id": str(rec.scan_id),
+        "selected_modality": str(rec.modality),
+        "input_path": str(rec.nifti_path),
+        "resolved_nifti_path": str(resolved_path),
+        "volume": {
+            "shape_xyz": [int(v) for v in ctx.volume_xyz.shape],
+            "spacing_mm": [float(v) for v in ctx.spacing_mm.tolist()],
+            "dtype": str(ctx.volume_xyz.dtype),
+            "min": float(ctx.volume_xyz.min()),
+            "max": float(ctx.volume_xyz.max()),
+            "mean": float(ctx.volume_xyz.mean()),
+        },
+        "runtime_device": runtime.device,
+        "sample_generation_ms": float(sample_elapsed_ms),
+        "contract": contract,
+        "sample_meta": meta,
+    }
 
 
 def run_matrix_benchmark(
