@@ -239,14 +239,19 @@ def _monai_resample_patch(
     rotation_matrix: np.ndarray,
     plane_offsets_mm: np.ndarray,
 ) -> np.ndarray:
-    """Best-effort MONAI Resample patch extraction.
+    """Strict MONAI Resample patch extraction.
 
-    MONAI API varies across versions. This function attempts MONAI resampling first,
-    then falls back to torch grid_sample if unavailable.
+    This path is intentionally strict: if MONAI resampling is unavailable or fails,
+    we raise instead of silently falling back to torch grid_sample.
     """
     try:
         from monai.transforms import Resample  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(
+            "MONAI backend hard-fail: monai.transforms.Resample is unavailable."
+        ) from exc
 
+    try:
         torch, _ = _require_torch()
         offsets = plane_offsets_mm.reshape(-1, 3)
         rotated = (offsets @ rotation_matrix.T).astype(np.float32, copy=False)
@@ -259,15 +264,11 @@ def _monai_resample_patch(
         out = resampler(volume_zyx_tensor[0], grid)
         out = out.squeeze(0).squeeze(0)
         return out.detach().cpu().numpy().astype(np.float32, copy=False)
-    except Exception:
-        return extract_rotated_patch_b_grid_sample(
-            volume_zyx_tensor=volume_zyx_tensor,
-            affine_inv=affine_inv,
-            shape_xyz=shape_xyz,
-            center_world_mm=center_world_mm,
-            rotation_matrix=rotation_matrix,
-            plane_offsets_mm=plane_offsets_mm,
-        )
+    except Exception as exc:
+        raise RuntimeError(
+            "MONAI backend hard-fail: coordinate patch resampling failed; "
+            "no grid_sample fallback is allowed."
+        ) from exc
 
 
 def build_asymmetric_sample(

@@ -232,6 +232,12 @@ class MedRSBackend(BackendAdapter):
 
     def prepare(self, cell_ctx: CellContext) -> None:
         del cell_ctx
+        if not bridge_available():
+            err = bridge_error() or "unknown import error"
+            raise RuntimeError(
+                "MedRS backend hard-fail: Rust bridge is required but unavailable "
+                f"({err})."
+            )
 
     def build_dataset(self, cell_ctx: CellContext):
         return _MedRSIterableDataset(cell_ctx=cell_ctx)
