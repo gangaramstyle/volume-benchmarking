@@ -38,6 +38,10 @@ Optional columns:
 Small committed smoke catalog:
 - `data/catalog_smoke_32.csv`
 
+Current default filtering behavior:
+- keep only `CT` and `MR` modalities
+- skip likely non-diagnostic/derived series (for example scout/localizer/reformat-style series)
+
 ## Run benchmark matrix
 ```bash
 vb bench run --matrix configs/matrix.default.yaml --runtime configs/runtime.default.yaml --catalog /path/to/catalog.csv --backends all

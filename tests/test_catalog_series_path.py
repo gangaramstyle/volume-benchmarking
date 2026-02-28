@@ -32,3 +32,52 @@ def test_resolve_nifti_path_from_series_picks_largest(tmp_path: Path) -> None:
 
     resolved = resolve_nifti_path(str(series_dir))
     assert resolved == str(big)
+
+
+def test_catalog_skips_non_ct_mr_modalities(tmp_path: Path) -> None:
+    series_dir = tmp_path / "series3"
+    series_dir.mkdir()
+    catalog = tmp_path / "catalog_modality.csv"
+
+    with catalog.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["scan_id", "series_path", "modality"])
+        writer.writeheader()
+        writer.writerow({"scan_id": "keep_ct", "series_path": str(series_dir), "modality": "CT"})
+        writer.writerow({"scan_id": "drop_xa", "series_path": str(series_dir), "modality": "XA"})
+
+    rows = load_catalog(str(catalog))
+    assert len(rows) == 1
+    assert rows[0].scan_id == "keep_ct"
+
+
+def test_catalog_skips_weird_series_descriptions(tmp_path: Path) -> None:
+    series_dir = tmp_path / "series4"
+    series_dir.mkdir()
+    catalog = tmp_path / "catalog_series_desc.csv"
+
+    with catalog.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["scan_id", "series_path", "modality", "series_description"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "scan_id": "drop_localizer",
+                "series_path": str(series_dir),
+                "modality": "MR",
+                "series_description": "Localizer scout",
+            }
+        )
+        writer.writerow(
+            {
+                "scan_id": "keep_t1",
+                "series_path": str(series_dir),
+                "modality": "MR",
+                "series_description": "T1 weighted axial",
+            }
+        )
+
+    rows = load_catalog(str(catalog))
+    assert len(rows) == 1
+    assert rows[0].scan_id == "keep_t1"

@@ -30,6 +30,41 @@ def _resolve_input_path(row: dict[str, Any]) -> str:
     raise ValueError("Catalog row missing required column: 'nifti_path' or 'series_path'")
 
 
+def _is_supported_modality(row: dict[str, Any]) -> bool:
+    modality = str(row.get("modality", "") or "").strip().upper()
+    return modality in {"CT", "MR"}
+
+
+def _looks_like_weird_series(row: dict[str, Any]) -> bool:
+    """Heuristic filter for non-standard/derived scout/localizer style series."""
+    series_description = str(row.get("series_description", "") or "").strip().lower()
+    exam_type = str(row.get("exam_type", "") or "").strip().lower()
+    body_part = str(row.get("body_part", "") or "").strip().lower()
+    joined = " | ".join([series_description, exam_type, body_part])
+
+    weird_tokens = (
+        "scout",
+        "localizer",
+        "locator",
+        "survey",
+        "topogram",
+        "mip",
+        "mpr",
+        "reformat",
+        "recon",
+        "derived",
+        "screenshot",
+        "screen save",
+        "dose report",
+        "secondary capture",
+        "bone density",
+        "calcium score",
+        "perfusion map",
+        "tracew",
+    )
+    return any(tok in joined for tok in weird_tokens)
+
+
 def _load_csv_like(path: Path) -> list[dict[str, Any]]:
     opener = gzip.open if path.suffix.endswith("gz") else open
     with opener(path, "rt", encoding="utf-8", newline="") as handle:
@@ -57,7 +92,7 @@ def load_catalog(path: str) -> list[VolumeRecord]:
     """Load volume records from csv/csv.gz/parquet catalog.
 
     Required column: one of `nifti_path` or `series_path`
-    Optional columns: `scan_id`, `modality`
+    Optional columns: `scan_id`, `modality`, `series_description`
     """
     catalog_path = Path(path).expanduser().resolve()
     if not catalog_path.exists():
@@ -70,6 +105,10 @@ def load_catalog(path: str) -> list[VolumeRecord]:
 
     records: list[VolumeRecord] = []
     for row in rows:
+        if not _is_supported_modality(row):
+            continue
+        if _looks_like_weird_series(row):
+            continue
         resolved_path = _resolve_input_path(row)
         records.append(
             VolumeRecord(
