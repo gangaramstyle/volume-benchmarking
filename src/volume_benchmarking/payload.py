@@ -280,6 +280,7 @@ def build_asymmetric_sample(
     worker_id: int,
     replacement_wait_ms_delta: float = 0.0,
     b_extractor: Callable[..., np.ndarray] | None = None,
+    b_extractor_batch: Callable[..., np.ndarray] | None = None,
 ) -> dict[str, object]:
     """Build one benchmark sample containing A/B patch sets and supervision targets."""
     torch, _ = _require_torch()
@@ -324,21 +325,31 @@ def build_asymmetric_sample(
     )
 
     volume_zyx_tensor = _volume_xyz_to_zyx_tensor(ctx.volume_xyz, device=device)
-    extractor = b_extractor or extract_rotated_patch_b_grid_sample
-    patches_b = np.stack(
-        [
-            extractor(
-                volume_zyx_tensor=volume_zyx_tensor,
-                affine_inv=ctx.affine_inv,
-                shape_xyz=ctx.geometry.shape_xyz,
-                center_world_mm=centers_b_world[idx],
-                rotation_matrix=rotation_b,
-                plane_offsets_mm=plane_offsets,
-            )
-            for idx in range(centers_b_world.shape[0])
-        ],
-        axis=0,
-    )
+    if b_extractor_batch is not None:
+        patches_b = b_extractor_batch(
+            volume_zyx_tensor=volume_zyx_tensor,
+            affine_inv=ctx.affine_inv,
+            shape_xyz=ctx.geometry.shape_xyz,
+            centers_world_mm=centers_b_world,
+            rotation_matrix=rotation_b,
+            plane_offsets_mm=plane_offsets,
+        )
+    else:
+        extractor = b_extractor or extract_rotated_patch_b_grid_sample
+        patches_b = np.stack(
+            [
+                extractor(
+                    volume_zyx_tensor=volume_zyx_tensor,
+                    affine_inv=ctx.affine_inv,
+                    shape_xyz=ctx.geometry.shape_xyz,
+                    center_world_mm=centers_b_world[idx],
+                    rotation_matrix=rotation_b,
+                    plane_offsets_mm=plane_offsets,
+                )
+                for idx in range(centers_b_world.shape[0])
+            ],
+            axis=0,
+        )
 
     patches_a = apply_window(patches_a, wc=window_a.wc, ww=window_a.ww)
     patches_b = apply_window(patches_b, wc=window_b.wc, ww=window_b.ww)

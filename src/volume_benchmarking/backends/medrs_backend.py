@@ -122,22 +122,26 @@ class _MedRSLRUCache:
             self._cache.popitem(last=False)
 
 
-def _medrs_bridge_patch_extractor(
+def _medrs_bridge_patch_extractor_batch(
     volume_zyx_tensor,
     affine_inv: np.ndarray,
     shape_xyz: tuple[int, int, int],
-    center_world_mm: np.ndarray,
+    centers_world_mm: np.ndarray,
     rotation_matrix: np.ndarray,
     plane_offsets_mm: np.ndarray,
 ) -> np.ndarray:
     del shape_xyz
     vol_xyz = volume_zyx_tensor[0, 0].detach().cpu().numpy().transpose(2, 1, 0).astype(np.float32, copy=False)
+    centers = np.asarray(centers_world_mm, dtype=np.float32)
+    if centers.ndim != 2 or centers.shape[1] != 3:
+        raise ValueError(f"centers_world_mm must be shape (N, 3), got {centers.shape}")
+
     offsets = plane_offsets_mm.reshape(-1, 3)
     rotated = (offsets @ rotation_matrix.T).astype(np.float32, copy=False)
-    points_world = center_world_mm[np.newaxis, :] + rotated
-    points_vox = world_to_voxel(points_world, affine_inv).reshape(1, 16, 16, 3)
+    points_world = centers[:, np.newaxis, :] + rotated[np.newaxis, :, :]
+    points_vox = world_to_voxel(points_world.reshape(-1, 3), affine_inv).reshape(centers.shape[0], 16, 16, 3)
     sampled = sample_patches_trilinear(vol_xyz, points_vox)
-    return sampled[0].astype(np.float32, copy=False)
+    return sampled.astype(np.float32, copy=False)
 
 
 class _MedRSIterableDataset(IterableDataset):
@@ -192,7 +196,7 @@ class _MedRSIterableDataset(IterableDataset):
                 cache_state=self.cell_ctx.cell.cache_state,
                 worker_id=worker_id,
                 replacement_wait_ms_delta=0.0,
-                b_extractor=_medrs_bridge_patch_extractor,
+                b_extractor_batch=_medrs_bridge_patch_extractor_batch,
             )
             sample["meta"]["medrs_io_mode"] = decoded.io_mode
             sample["meta"]["medrs_bridge_available"] = bool(bridge_available())
