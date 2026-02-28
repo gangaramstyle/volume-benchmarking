@@ -117,12 +117,38 @@ class _MONAIIterableDataset(IterableDataset):
         return shard or records
 
     @staticmethod
-    def _build_monai_rows(records) -> list[dict[str, str]]:
+    def _is_monai_loadable_nifti(path: str) -> bool:
+        """Fast preflight to avoid MONAI loader crashes on structured/unsupported payloads."""
+        try:
+            import nibabel as nib
+        except Exception:
+            # If nibabel isn't available, let MONAI attempt load and fail noisily.
+            return True
+
+        try:
+            img = nib.load(path)
+            dtype = np.dtype(img.header.get_data_dtype())
+            shape = tuple(int(v) for v in img.shape)
+        except Exception:
+            return False
+
+        if dtype.fields:
+            return False
+        if dtype.kind == "V":
+            return False
+        if len(shape) not in (3, 4):
+            return False
+        return True
+
+    @classmethod
+    def _build_monai_rows(cls, records) -> list[dict[str, str]]:
         rows: list[dict[str, str]] = []
         for rec in records:
             try:
                 resolved = resolve_nifti_path(rec.nifti_path)
             except Exception:
+                continue
+            if not cls._is_monai_loadable_nifti(resolved):
                 continue
             rows.append({"image": resolved, "scan_id": rec.scan_id})
         return rows
