@@ -231,7 +231,12 @@ class MedRSBackend(BackendAdapter):
         return "medrs"
 
     def prepare(self, cell_ctx: CellContext) -> None:
-        del cell_ctx
+        if int(cell_ctx.cell.workers) > 0:
+            raise RuntimeError(
+                "MedRS backend currently supports workers=0 only. "
+                "workers>0 can deadlock with DataLoader multiprocessing; "
+                "run MedRS cells with --workers 0."
+            )
         if not bridge_available():
             err = bridge_error() or "unknown import error"
             raise RuntimeError(
