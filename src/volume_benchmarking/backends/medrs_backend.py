@@ -10,7 +10,12 @@ import numpy as np
 
 from volume_benchmarking.backends.base import BackendAdapter, CellContext
 from volume_benchmarking.geometry import VolumeGeometry, spacing_from_affine, world_to_voxel
-from volume_benchmarking.payload import VolumeContext, build_asymmetric_sample, load_nifti_context
+from volume_benchmarking.payload import (
+    VolumeContext,
+    build_asymmetric_sample,
+    load_nifti_context,
+    resolve_nifti_path,
+)
 from volume_benchmarking.rust_bridge import bridge_available, bridge_error, sample_patches_trilinear
 
 try:
@@ -43,6 +48,11 @@ class _MedRSDecoder:
         if self._medrs is None:
             return None
 
+        try:
+            resolved_path = resolve_nifti_path(nifti_path)
+        except Exception:
+            return None
+
         medrs = self._medrs
         candidates = [
             getattr(medrs, "read_nifti", None),
@@ -53,7 +63,10 @@ class _MedRSDecoder:
         if fn is None:
             return None
 
-        result = fn(nifti_path)
+        try:
+            result = fn(resolved_path)
+        except Exception:
+            return None
         vol = None
         affine = None
 
