@@ -10,6 +10,7 @@ from volume_benchmarking.backends import make_backend
 from volume_benchmarking.backends.base import CellContext
 from volume_benchmarking.catalog import load_catalog
 from volume_benchmarking.contracts import BenchmarkCellConfig, BenchmarkRuntimeConfig
+from volume_benchmarking.rust_bridge import bridge_available
 
 
 def _write_synthetic_nifti(path: Path) -> None:
@@ -19,7 +20,7 @@ def _write_synthetic_nifti(path: Path) -> None:
     nib.save(img, str(path))
 
 
-def test_medrs_prepare_rejects_workers_gt_zero(tmp_path: Path) -> None:
+def test_medrs_prepare_bridge_requirement(tmp_path: Path) -> None:
     nifti_path = tmp_path / "sample.nii.gz"
     _write_synthetic_nifti(nifti_path)
 
@@ -43,5 +44,8 @@ def test_medrs_prepare_rejects_workers_gt_zero(tmp_path: Path) -> None:
     ctx = CellContext(cell=cell, runtime=runtime, records=records)
 
     backend = make_backend("medrs", records=records, runtime=runtime)
-    with pytest.raises(RuntimeError, match="workers=0 only"):
+    if bridge_available():
         backend.prepare(ctx)
+    else:
+        with pytest.raises(RuntimeError, match="Rust bridge is required"):
+            backend.prepare(ctx)

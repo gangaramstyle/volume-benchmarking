@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import collections
+import queue
+import threading
+import traceback
 from dataclasses import dataclass
 from typing import Any
 
@@ -168,35 +171,27 @@ class _MedRSIterableDataset(IterableDataset):
         shard = [r for r in records if hash(r.scan_id) % num_workers == worker_id]
         return shard or records
 
-    def __iter__(self):
-        try:
-            import torch
-        except Exception as exc:
-            raise RuntimeError("torch is required for medrs backend") from exc
+    def _build_sample(
+        self,
+        *,
+        records,
+        rng: np.random.Generator,
+        worker_id: int,
+        decoder: _MedRSDecoder,
+        cache: _MedRSLRUCache | None,
+        failed_scan_ids: set[str],
+    ) -> dict[str, Any]:
+        eligible = [r for r in records if r.scan_id not in failed_scan_ids]
+        if not eligible:
+            raise RuntimeError(
+                "MedRS backend could not decode any eligible records in this shard. "
+                "All records failed at least once; consider a cleaner catalog subset."
+            )
 
-        worker = torch.utils.data.get_worker_info()
-        if worker is None:
-            worker_id, num_workers = 0, 1
-        else:
-            worker_id, num_workers = worker.id, worker.num_workers
-
-        rng = np.random.default_rng(self.cell_ctx.runtime.seed + 500 + worker_id)
-        records = self._worker_shard(self.cell_ctx.records, worker_id, num_workers)
-        failed_scan_ids: set[str] = set()
-
-        decoder = _MedRSDecoder()
-        use_cache = self.cell_ctx.cell.cache_state == "warm_pool"
-        cache = _MedRSLRUCache(max_size=self.cell_ctx.runtime.pool_size) if use_cache else None
-
-        while True:
-            eligible = [r for r in records if r.scan_id not in failed_scan_ids]
-            if not eligible:
-                raise RuntimeError(
-                    "MedRS backend could not decode any eligible records in this shard. "
-                    "All records failed at least once; consider a cleaner catalog subset."
-                )
-
-            rec = eligible[int(rng.integers(0, len(eligible)))]
+        perm = rng.permutation(len(eligible))
+        decoded: _DecodeResult | None = None
+        for idx in perm:
+            rec = eligible[int(idx)]
             cached = cache.get(rec.scan_id) if cache is not None else None
             if cached is None:
                 try:
@@ -208,22 +203,123 @@ class _MedRSIterableDataset(IterableDataset):
                     cache.put(rec.scan_id, decoded)
             else:
                 decoded = cached
+            break
 
-            sample = build_asymmetric_sample(
-                ctx=decoded.ctx,
-                n_patches=self.cell_ctx.cell.n_patches,
-                device=self.cell_ctx.runtime.device,
-                rng=rng,
-                backend="medrs",
-                cache_state=self.cell_ctx.cell.cache_state,
-                worker_id=worker_id,
-                replacement_wait_ms_delta=0.0,
-                b_extractor_batch=_medrs_bridge_patch_extractor_batch,
+        if decoded is None:
+            raise RuntimeError(
+                "MedRS backend could not decode a record for this sample. "
+                "All currently eligible records failed."
             )
-            sample["meta"]["medrs_io_mode"] = decoded.io_mode
-            sample["meta"]["medrs_bridge_available"] = bool(bridge_available())
-            sample["meta"]["medrs_bridge_error"] = bridge_error()
-            yield sample
+
+        sample = build_asymmetric_sample(
+            ctx=decoded.ctx,
+            n_patches=self.cell_ctx.cell.n_patches,
+            device=self.cell_ctx.runtime.device,
+            rng=rng,
+            backend="medrs",
+            cache_state=self.cell_ctx.cell.cache_state,
+            worker_id=worker_id,
+            replacement_wait_ms_delta=0.0,
+            b_extractor_batch=_medrs_bridge_patch_extractor_batch,
+        )
+        sample["meta"]["medrs_io_mode"] = decoded.io_mode
+        sample["meta"]["medrs_bridge_available"] = bool(bridge_available())
+        sample["meta"]["medrs_bridge_error"] = bridge_error()
+        return sample
+
+    def _single_thread_iter(self, worker_id: int):
+        records = self._worker_shard(self.cell_ctx.records, worker_id, 1)
+        rng = np.random.default_rng(self.cell_ctx.runtime.seed + 500 + worker_id)
+        decoder = _MedRSDecoder()
+        use_cache = self.cell_ctx.cell.cache_state == "warm_pool"
+        cache = _MedRSLRUCache(max_size=self.cell_ctx.runtime.pool_size) if use_cache else None
+        failed_scan_ids: set[str] = set()
+
+        while True:
+            yield self._build_sample(
+                records=records,
+                rng=rng,
+                worker_id=worker_id,
+                decoder=decoder,
+                cache=cache,
+                failed_scan_ids=failed_scan_ids,
+            )
+
+    def _threaded_iter(self, internal_workers: int):
+        q: queue.Queue[tuple[str, int, Any]] = queue.Queue(maxsize=max(4, internal_workers * 2))
+        stop_event = threading.Event()
+        timeout_s = float(max(int(self.cell_ctx.runtime.data_loader_timeout_s), 30))
+        records = list(self.cell_ctx.records)
+
+        def _producer(thread_idx: int) -> None:
+            rng = np.random.default_rng(self.cell_ctx.runtime.seed + 500 + thread_idx)
+            decoder = _MedRSDecoder()
+            use_cache = self.cell_ctx.cell.cache_state == "warm_pool"
+            cache = _MedRSLRUCache(max_size=self.cell_ctx.runtime.pool_size) if use_cache else None
+            failed_scan_ids: set[str] = set()
+            thread_records = self._worker_shard(records, thread_idx, internal_workers)
+
+            while not stop_event.is_set():
+                try:
+                    sample = self._build_sample(
+                        records=thread_records,
+                        rng=rng,
+                        worker_id=thread_idx,
+                        decoder=decoder,
+                        cache=cache,
+                        failed_scan_ids=failed_scan_ids,
+                    )
+                except Exception:
+                    err = traceback.format_exc()
+                    stop_event.set()
+                    try:
+                        q.put(("error", thread_idx, err), timeout=0.1)
+                    except Exception:
+                        pass
+                    return
+
+                while not stop_event.is_set():
+                    try:
+                        q.put(("sample", thread_idx, sample), timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
+
+        threads = [
+            threading.Thread(target=_producer, args=(idx,), daemon=True, name=f"medrs-worker-{idx}")
+            for idx in range(internal_workers)
+        ]
+        for t in threads:
+            t.start()
+
+        try:
+            while True:
+                try:
+                    kind, thread_idx, payload = q.get(timeout=timeout_s)
+                except queue.Empty as exc:
+                    if not any(t.is_alive() for t in threads):
+                        raise RuntimeError("MedRS internal workers exited before producing samples.") from exc
+                    raise RuntimeError(
+                        "Timed out waiting for MedRS internal worker samples. "
+                        "Increase runtime.data_loader_timeout_s if this is expected."
+                    ) from exc
+
+                if kind == "error":
+                    raise RuntimeError(
+                        f"MedRS internal worker {thread_idx} failed while preparing a sample:\n{payload}"
+                    )
+                yield payload
+        finally:
+            stop_event.set()
+            for t in threads:
+                t.join(timeout=1.0)
+
+    def __iter__(self):
+        internal_workers = int(self.cell_ctx.cell.workers)
+        if internal_workers <= 0:
+            yield from self._single_thread_iter(worker_id=0)
+            return
+        yield from self._threaded_iter(internal_workers=internal_workers)
 
 
 class MedRSBackend(BackendAdapter):
@@ -231,12 +327,7 @@ class MedRSBackend(BackendAdapter):
         return "medrs"
 
     def prepare(self, cell_ctx: CellContext) -> None:
-        if int(cell_ctx.cell.workers) > 0:
-            raise RuntimeError(
-                "MedRS backend currently supports workers=0 only. "
-                "workers>0 can deadlock with DataLoader multiprocessing; "
-                "run MedRS cells with --workers 0."
-            )
+        del cell_ctx
         if not bridge_available():
             err = bridge_error() or "unknown import error"
             raise RuntimeError(

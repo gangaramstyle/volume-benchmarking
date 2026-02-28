@@ -136,16 +136,6 @@ def _write_jsonl_line(handle, payload: dict[str, Any]) -> None:
     handle.flush()
 
 
-def _unsupported_cell_reason(cell: BenchmarkCellConfig) -> str | None:
-    """Return reason when a matrix cell is intentionally unsupported."""
-    if cell.backend == "medrs" and int(cell.workers) > 0:
-        return (
-            "medrs backend currently supports workers=0 only; "
-            "workers>0 cells are skipped to avoid known multiprocessing deadlocks."
-        )
-    return None
-
-
 def _cell_to_row_dict(metrics: CellMetrics) -> dict[str, Any]:
     return {
         "run_id": metrics.run_id,
@@ -184,13 +174,18 @@ def run_single_cell(
     backend.prepare(ctx)
 
     dataset = backend.build_dataset(ctx)
+    effective_loader_workers = int(cell.workers)
+    if cell.backend == "medrs":
+        # MedRS parallelism is handled inside the backend to avoid torch process deadlocks.
+        effective_loader_workers = 0
+
     loader_kwargs: dict[str, Any] = {
         "batch_size": cell.batch_size,
-        "num_workers": cell.workers,
+        "num_workers": effective_loader_workers,
         "collate_fn": _stack_collate,
         "pin_memory": runtime.device.startswith("cuda"),
     }
-    if cell.workers > 0:
+    if effective_loader_workers > 0:
         loader_kwargs["persistent_workers"] = False
         loader_kwargs["prefetch_factor"] = 2
         if int(runtime.data_loader_timeout_s) > 0:
@@ -294,6 +289,7 @@ def run_single_cell(
         extra={
             "device": runtime.device,
             "nsight_enabled": runtime.enable_nsight,
+            "effective_loader_workers": effective_loader_workers,
         },
     )
 
@@ -348,7 +344,7 @@ def _write_summary_markdown(path: Path, rows: list[dict[str, Any]], run_id: str)
             "",
             "- Cold cache mode is user-space approximation (`cold_approx`).",
             "- MONAI and MedRS are strict paths (no hidden fallback extraction path).",
-            "- MedRS worker-multiprocess cells may be skipped if unsupported in this runtime.",
+            "- MedRS uses internal threaded workers and torch DataLoader process workers are disabled.",
             "- Nsight tracing is optional and disabled unless explicitly enabled.",
         ]
     )
@@ -553,23 +549,6 @@ def run_matrix_benchmark(
     rows: list[dict[str, Any]] = []
     with raw_path.open("w", encoding="utf-8") as raw_handle:
         for cell in cells:
-            unsupported_reason = _unsupported_cell_reason(cell)
-            if unsupported_reason is not None:
-                _write_jsonl_line(
-                    raw_handle,
-                    {
-                        "event": "cell_skipped",
-                        "run_id": run_id,
-                        "cell_id": cell.cell_id,
-                        "backend": cell.backend,
-                        "cache_state": cell.cache_state,
-                        "workers": cell.workers,
-                        "n_patches": cell.n_patches,
-                        "batch_size": cell.batch_size,
-                        "reason": unsupported_reason,
-                    },
-                )
-                continue
             try:
                 metrics = run_single_cell(
                     run_id=run_id,
