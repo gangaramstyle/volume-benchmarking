@@ -35,6 +35,9 @@ Optional columns:
 - `scan_id`
 - `modality`
 
+Small committed smoke catalog:
+- `data/catalog_smoke_32.csv`
+
 ## Run benchmark matrix
 ```bash
 vb bench run --matrix configs/matrix.default.yaml --runtime configs/runtime.default.yaml --catalog /path/to/catalog.csv --backends all
