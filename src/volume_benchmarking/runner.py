@@ -136,6 +136,16 @@ def _write_jsonl_line(handle, payload: dict[str, Any]) -> None:
     handle.flush()
 
 
+def _unsupported_cell_reason(cell: BenchmarkCellConfig) -> str | None:
+    """Return reason when a matrix cell is intentionally unsupported."""
+    if cell.backend == "medrs" and int(cell.workers) > 0:
+        return (
+            "medrs backend currently supports workers=0 only; "
+            "workers>0 cells are skipped to avoid known multiprocessing deadlocks."
+        )
+    return None
+
+
 def _cell_to_row_dict(metrics: CellMetrics) -> dict[str, Any]:
     return {
         "run_id": metrics.run_id,
@@ -337,7 +347,8 @@ def _write_summary_markdown(path: Path, rows: list[dict[str, Any]], run_id: str)
             "## Caveats",
             "",
             "- Cold cache mode is user-space approximation (`cold_approx`).",
-            "- MONAI and MedRS optional paths may fall back when optional runtime features are unavailable.",
+            "- MONAI and MedRS are strict paths (no hidden fallback extraction path).",
+            "- MedRS worker-multiprocess cells may be skipped if unsupported in this runtime.",
             "- Nsight tracing is optional and disabled unless explicitly enabled.",
         ]
     )
@@ -542,6 +553,23 @@ def run_matrix_benchmark(
     rows: list[dict[str, Any]] = []
     with raw_path.open("w", encoding="utf-8") as raw_handle:
         for cell in cells:
+            unsupported_reason = _unsupported_cell_reason(cell)
+            if unsupported_reason is not None:
+                _write_jsonl_line(
+                    raw_handle,
+                    {
+                        "event": "cell_skipped",
+                        "run_id": run_id,
+                        "cell_id": cell.cell_id,
+                        "backend": cell.backend,
+                        "cache_state": cell.cache_state,
+                        "workers": cell.workers,
+                        "n_patches": cell.n_patches,
+                        "batch_size": cell.batch_size,
+                        "reason": unsupported_reason,
+                    },
+                )
+                continue
             try:
                 metrics = run_single_cell(
                     run_id=run_id,
