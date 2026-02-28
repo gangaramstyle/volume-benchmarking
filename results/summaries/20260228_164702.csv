@@ -1,0 +1,2 @@
+run_id,cell_id,backend,cache_state,workers,n_patches,batch_size,warmup_batches,timed_batches,time_to_first_batch_ms,throughput_samples_per_sec,timed_wall_seconds,samples_timed,peak_cpu_rss_gb_global,peak_vram_allocated_gb,peak_vram_reserved_gb,gpu_starvation_wait_ms_total,gpu_starvation_wait_ms_mean,replacement_wait_ms_total
+20260228_164702,monai__warm_pool__w0__n16__b1,monai,warm_pool,0,16,1,1,2,15658.124797046185,5.318604488405371,0.3760384898632765,2,2.3970298767089844,0.0,0.0,16078.743737190962,4019.6859342977405,0.0
