@@ -47,6 +47,15 @@ Current default filtering behavior:
 vb bench run --matrix configs/matrix.default.yaml --runtime configs/runtime.default.yaml --catalog /path/to/catalog.csv --backends all
 ```
 
+Smaller presets for faster iteration:
+```bash
+# Quick backend health check (3 cells total)
+vb bench run --matrix configs/matrix.smoke.yaml --runtime configs/runtime.default.yaml --catalog data/catalog_smoke_32.csv --backends all
+
+# Fast comparison pass (24 cells total)
+vb bench run --matrix configs/matrix.fast.yaml --runtime configs/runtime.default.yaml --catalog data/catalog_smoke_32.csv --backends all
+```
+
 ## Run single cell
 ```bash
 vb bench run-cell --backend custom_fused --cache-state warm_pool --workers 4 --n-patches 64 --batch-size 4 --catalog /path/to/catalog.csv
