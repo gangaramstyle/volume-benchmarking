@@ -1,0 +1,10 @@
+runtime:
+  catalog_path: "/path/to/catalog.csv"
+  device: auto
+  output_root: .
+  pool_size: 16
+  visits_per_scan: 64
+  prefetch_replacements: 2
+  cold_cache_reset_process: true
+  enable_nsight: false
+  nsight_cmd: "nsys profile --sample=none --trace=cuda,nvtx,osrt --output results/nsys/{cell_id}"

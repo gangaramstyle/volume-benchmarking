@@ -1,0 +1,10 @@
+matrix:
+  cache_states: [cold_approx, warm_pool]
+  workers: [0, 4, 8, 16]
+  n_patches: [16, 64, 256]
+  batch_sizes: [4, 16]
+run:
+  warmup_batches: 10
+  timed_batches: 50
+  seed: 42
+  backends: [custom_fused, monai, medrs]

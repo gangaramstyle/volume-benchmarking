@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Rust / maturin
+rust/medrs_patch_bridge/target/
+*.whl
+
+# Benchmark heavy artifacts
+results/nsys/
+*.qdrep
+*.nsys-rep
+
+# Local temp/cache
+.cache/
+.tmp/

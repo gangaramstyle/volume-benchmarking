@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "volume-benchmarking"
+version = "0.1.0"
+description = "Asymmetric 3D-to-2D dataloader benchmarking harness for SSL workloads"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "volume-benchmarking contributors" }]
+dependencies = [
+  "numpy>=1.26",
+  "torch>=2.3",
+  "nibabel>=5.2",
+  "psutil>=5.9",
+  "pynvml>=11.5",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+monai = ["monai>=1.5.2"]
+medrs = ["medrs>=0.1.2"]
+test = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+vb = "volume_benchmarking.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
