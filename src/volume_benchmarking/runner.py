@@ -67,6 +67,8 @@ def _load_runtime_config(path: str | None, catalog_override: str | None = None) 
         visits_per_scan=int(runtime.get("visits_per_scan", 64)),
         prefetch_replacements=int(runtime.get("prefetch_replacements", 2)),
         cold_cache_reset_process=bool(runtime.get("cold_cache_reset_process", True)),
+        data_loader_timeout_s=int(runtime.get("data_loader_timeout_s", 180)),
+        continue_on_cell_error=bool(runtime.get("continue_on_cell_error", True)),
         enable_nsight=bool(runtime.get("enable_nsight", False)),
         nsight_cmd=str(runtime.get("nsight_cmd", "")),
         seed=int(runtime.get("seed", 42)),
@@ -180,6 +182,8 @@ def run_single_cell(
     if cell.workers > 0:
         loader_kwargs["persistent_workers"] = False
         loader_kwargs["prefetch_factor"] = 2
+        if int(runtime.data_loader_timeout_s) > 0:
+            loader_kwargs["timeout"] = int(runtime.data_loader_timeout_s)
 
     loader = DataLoader(dataset, **loader_kwargs)
     profiler = RuntimeProfiler(device=runtime.device)
@@ -420,14 +424,33 @@ def run_matrix_benchmark(
     rows: list[dict[str, Any]] = []
     with raw_path.open("w", encoding="utf-8") as raw_handle:
         for cell in cells:
-            metrics = run_single_cell(
-                run_id=run_id,
-                cell=cell,
-                runtime=runtime,
-                records=records,
-                raw_handle=raw_handle,
-            )
-            rows.append(_cell_to_row_dict(metrics))
+            try:
+                metrics = run_single_cell(
+                    run_id=run_id,
+                    cell=cell,
+                    runtime=runtime,
+                    records=records,
+                    raw_handle=raw_handle,
+                )
+                rows.append(_cell_to_row_dict(metrics))
+            except Exception as exc:
+                _write_jsonl_line(
+                    raw_handle,
+                    {
+                        "event": "cell_error",
+                        "run_id": run_id,
+                        "cell_id": cell.cell_id,
+                        "backend": cell.backend,
+                        "cache_state": cell.cache_state,
+                        "workers": cell.workers,
+                        "n_patches": cell.n_patches,
+                        "batch_size": cell.batch_size,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+                if not runtime.continue_on_cell_error:
+                    raise
 
     csv_path = output_root / "results" / "summaries" / f"{run_id}.csv"
     md_path = output_root / "results" / "summaries" / f"{run_id}.md"

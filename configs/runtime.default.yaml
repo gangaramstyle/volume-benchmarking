@@ -6,5 +6,7 @@ runtime:
   visits_per_scan: 64
   prefetch_replacements: 2
   cold_cache_reset_process: true
+  data_loader_timeout_s: 180
+  continue_on_cell_error: true
   enable_nsight: false
   nsight_cmd: "nsys profile --sample=none --trace=cuda,nvtx,osrt --output results/nsys/{cell_id}"

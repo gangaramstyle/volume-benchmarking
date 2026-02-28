@@ -81,3 +81,6 @@ vb bench summarize --input results/raw/*.jsonl
 - Cold cache mode is user-space approximation (`cold_approx`) because OS page-cache drop requires root.
 - Nsight mode is optional (`--nsight`) and disabled by default.
 - DLProf is intentionally not used.
+- Runtime safety defaults in `configs/runtime.default.yaml`:
+  - `data_loader_timeout_s`: DataLoader worker timeout per fetch (prevents indefinite hangs)
+  - `continue_on_cell_error`: continue matrix run after per-cell failures and record `cell_error` events

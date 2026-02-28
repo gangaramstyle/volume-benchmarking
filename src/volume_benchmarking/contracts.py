@@ -50,6 +50,8 @@ class BenchmarkRuntimeConfig:
     enable_nsight: bool = False
     nsight_cmd: str = ""
     seed: int = 42
+    data_loader_timeout_s: int = 180
+    continue_on_cell_error: bool = True
 
     @property
     def output_root_path(self) -> Path:
