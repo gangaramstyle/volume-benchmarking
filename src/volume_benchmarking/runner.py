@@ -345,6 +345,7 @@ def _write_summary_markdown(path: Path, rows: list[dict[str, Any]], run_id: str)
             "- Cold cache mode is user-space approximation (`cold_approx`).",
             "- MONAI and MedRS are strict paths (no hidden fallback extraction path).",
             "- MedRS uses internal threaded workers and torch DataLoader process workers are disabled.",
+            "- medrs_custom uses strict medrs decode + fused Rust patching with custom warm-slot replacement.",
             "- Nsight tracing is optional and disabled unless explicitly enabled.",
         ]
     )

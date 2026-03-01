@@ -4,6 +4,7 @@ Asymmetric 3D-to-2D SSL dataloader benchmark harness comparing:
 - `custom_fused`
 - `monai`
 - `medrs`
+- `medrs_custom`
 
 ## What it benchmarks
 Each sample yields two views from the same 3D volume:
@@ -49,10 +50,10 @@ vb bench run --matrix configs/matrix.default.yaml --runtime configs/runtime.defa
 
 Smaller presets for faster iteration:
 ```bash
-# Quick backend health check (3 cells total)
+# Quick backend health check (4 cells total)
 vb bench run --matrix configs/matrix.smoke.yaml --runtime configs/runtime.default.yaml --catalog data/catalog_smoke_32.csv --backends all
 
-# Fast comparison pass (24 cells total)
+# Fast comparison pass (32 cells total)
 vb bench run --matrix configs/matrix.fast.yaml --runtime configs/runtime.default.yaml --catalog data/catalog_smoke_32.csv --backends all
 ```
 
@@ -66,6 +67,7 @@ vb bench run-cell --backend custom_fused --cache-state warm_pool --workers 4 --n
 vb bench sanity --backend custom_fused --catalog data/catalog_smoke_32.csv --record-index 0 --n-patches 16
 vb bench sanity --backend monai --catalog data/catalog_smoke_32.csv --record-index 0 --n-patches 16
 vb bench sanity --backend medrs --catalog data/catalog_smoke_32.csv --record-index 0 --n-patches 16
+vb bench sanity --backend medrs_custom --catalog data/catalog_smoke_32.csv --record-index 0 --n-patches 16
 ```
 
 ## Summarize existing raw runs
@@ -89,6 +91,7 @@ vb bench summarize --input results/raw/*.jsonl
 - Nsight mode is optional (`--nsight`) and disabled by default.
 - DLProf is intentionally not used.
 - MedRS uses internal threaded workers; torch `DataLoader` process workers are disabled for this backend to avoid fork deadlocks.
+- `medrs_custom` keeps strict medrs decode + fused Rust patch extraction, but uses custom-style warm slots and normal torch `DataLoader` workers.
 - MedRS backend requires a current `medrs_patch_bridge` build that exports `sample_asymmetric_patches_fused` (re-run `maturin develop` after pulling bridge changes).
 - Runtime safety defaults in `configs/runtime.default.yaml`:
   - `data_loader_timeout_s`: DataLoader worker timeout per fetch (prevents indefinite hangs)

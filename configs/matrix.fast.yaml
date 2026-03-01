@@ -7,4 +7,4 @@ run:
   warmup_batches: 3
   timed_batches: 10
   seed: 42
-  backends: [custom_fused, monai, medrs]
+  backends: [custom_fused, monai, medrs, medrs_custom]

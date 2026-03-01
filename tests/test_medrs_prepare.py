@@ -20,7 +20,8 @@ def _write_synthetic_nifti(path: Path) -> None:
     nib.save(img, str(path))
 
 
-def test_medrs_prepare_bridge_requirement(tmp_path: Path) -> None:
+@pytest.mark.parametrize("backend_name", ["medrs", "medrs_custom"])
+def test_medrs_prepare_bridge_requirement(tmp_path: Path, backend_name: str) -> None:
     nifti_path = tmp_path / "sample.nii.gz"
     _write_synthetic_nifti(nifti_path)
 
@@ -33,7 +34,7 @@ def test_medrs_prepare_bridge_requirement(tmp_path: Path) -> None:
     records = load_catalog(str(catalog_path))
     runtime = BenchmarkRuntimeConfig(catalog_path=str(catalog_path), device="cpu")
     cell = BenchmarkCellConfig(
-        backend="medrs",
+        backend=backend_name,
         cache_state="warm_pool",
         workers=4,
         n_patches=16,
@@ -43,7 +44,7 @@ def test_medrs_prepare_bridge_requirement(tmp_path: Path) -> None:
     )
     ctx = CellContext(cell=cell, runtime=runtime, records=records)
 
-    backend = make_backend("medrs", records=records, runtime=runtime)
+    backend = make_backend(backend_name, records=records, runtime=runtime)
     if bridge_available():
         backend.prepare(ctx)
     else:

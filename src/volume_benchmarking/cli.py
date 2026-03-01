@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     run_cell = bench_sub.add_parser("run-cell", help="Run one benchmark cell")
-    run_cell.add_argument("--backend", required=True, choices=["custom_fused", "monai", "medrs"])
+    run_cell.add_argument("--backend", required=True, choices=["custom_fused", "monai", "medrs", "medrs_custom"])
     run_cell.add_argument("--cache-state", required=True, choices=["cold_approx", "warm_pool"])
     run_cell.add_argument("--workers", type=int, required=True)
     run_cell.add_argument("--n-patches", type=int, required=True)
@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_cell.add_argument("--timed-batches", type=int, default=50)
 
     sanity = bench_sub.add_parser("sanity", help="Run single-file sanity check with verbose diagnostics")
-    sanity.add_argument("--backend", required=True, choices=["custom_fused", "monai", "medrs"])
+    sanity.add_argument("--backend", required=True, choices=["custom_fused", "monai", "medrs", "medrs_custom"])
     sanity.add_argument("--catalog", required=True)
     sanity.add_argument("--runtime", default=None, help="Path to runtime yaml")
     sanity.add_argument("--record-index", type=int, default=0)

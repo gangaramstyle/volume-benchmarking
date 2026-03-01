@@ -158,6 +158,8 @@ def _build_asymmetric_sample_medrs(
     cache_state: str,
     worker_id: int,
     io_mode: str,
+    backend_name: str = "medrs",
+    replacement_wait_ms_delta: float = 0.0,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -210,12 +212,12 @@ def _build_asymmetric_sample_medrs(
         "rotation_b_matrix": torch.from_numpy(rotation_b.astype(np.float32, copy=False)),
         "meta": {
             "scan_id": ctx.scan_id,
-            "backend": "medrs",
+            "backend": backend_name,
             "cache_state": cache_state,
             "worker_id": int(worker_id),
             "window_a": {"wc": window_a.wc, "ww": window_a.ww},
             "window_b": {"wc": window_b.wc, "ww": window_b.ww},
-            "replacement_wait_ms_delta": 0.0,
+            "replacement_wait_ms_delta": float(replacement_wait_ms_delta),
             "medrs_io_mode": io_mode,
             "medrs_bridge_available": bool(bridge_available()),
             "medrs_bridge_error": bridge_error(),
@@ -284,6 +286,8 @@ class _MedRSIterableDataset(IterableDataset):
             cache_state=self.cell_ctx.cell.cache_state,
             worker_id=worker_id,
             io_mode=decoded.io_mode,
+            backend_name="medrs",
+            replacement_wait_ms_delta=0.0,
         )
 
     def _single_thread_iter(self, worker_id: int):
