@@ -1,4 +1,4 @@
-"""MedRS backend with optional Rust bridge for coordinate-mapped patch extraction."""
+"""MedRS backend using strict medrs I/O plus fused Rust A/B patch extraction."""
 
 from __future__ import annotations
 
@@ -12,14 +12,24 @@ from typing import Any
 import numpy as np
 
 from volume_benchmarking.backends.base import BackendAdapter, CellContext
-from volume_benchmarking.geometry import VolumeGeometry, spacing_from_affine, world_to_voxel
+from volume_benchmarking.geometry import (
+    VolumeGeometry,
+    clamp_world_to_volume,
+    euler_xyz_to_matrix,
+    sample_anchor_a_voxel,
+    sample_anchor_b_world,
+    sample_points_in_sphere,
+    spacing_from_affine,
+    voxel_to_world,
+)
 from volume_benchmarking.payload import (
     VolumeContext,
-    build_asymmetric_sample,
-    load_nifti_context,
+    apply_window,
+    robust_window_stats,
+    sample_window_params,
     resolve_nifti_path,
 )
-from volume_benchmarking.rust_bridge import bridge_available, bridge_error, sample_patches_trilinear
+from volume_benchmarking.rust_bridge import bridge_available, bridge_error, sample_asymmetric_patches
 
 try:
     from torch.utils.data import IterableDataset
@@ -37,15 +47,15 @@ class _DecodeResult:
 class _MedRSDecoder:
     def __init__(self) -> None:
         self._medrs = None
-        self._io_mode = "nibabel_fallback"
+        self._io_mode = "medrs"
         try:
             import medrs  # type: ignore
 
             self._medrs = medrs
             self._io_mode = "medrs"
-        except Exception:
+        except Exception as exc:
             self._medrs = None
-            self._io_mode = "nibabel_fallback"
+            self._io_mode = f"unavailable:{exc}"
 
     def _try_medrs_decode(self, scan_id: str, nifti_path: str) -> VolumeContext | None:
         if self._medrs is None:
@@ -113,9 +123,12 @@ class _MedRSDecoder:
 
     def decode(self, scan_id: str, nifti_path: str) -> _DecodeResult:
         ctx = self._try_medrs_decode(scan_id, nifti_path)
-        if ctx is not None:
-            return _DecodeResult(ctx=ctx, io_mode="medrs")
-        return _DecodeResult(ctx=load_nifti_context(scan_id=scan_id, nifti_path=nifti_path), io_mode="nibabel_fallback")
+        if ctx is None:
+            raise RuntimeError(
+                "MedRS decode failed for this record. "
+                "This backend is configured for strict medrs I/O without nibabel fallback."
+            )
+        return _DecodeResult(ctx=ctx, io_mode="medrs")
 
 
 class _MedRSLRUCache:
@@ -138,26 +151,76 @@ class _MedRSLRUCache:
             self._cache.popitem(last=False)
 
 
-def _medrs_bridge_patch_extractor_batch(
-    volume_zyx_tensor,
-    affine_inv: np.ndarray,
-    shape_xyz: tuple[int, int, int],
-    centers_world_mm: np.ndarray,
-    rotation_matrix: np.ndarray,
-    plane_offsets_mm: np.ndarray,
-) -> np.ndarray:
-    del shape_xyz
-    vol_xyz = volume_zyx_tensor[0, 0].detach().cpu().numpy().transpose(2, 1, 0).astype(np.float32, copy=False)
-    centers = np.asarray(centers_world_mm, dtype=np.float32)
-    if centers.ndim != 2 or centers.shape[1] != 3:
-        raise ValueError(f"centers_world_mm must be shape (N, 3), got {centers.shape}")
+def _build_asymmetric_sample_medrs(
+    *,
+    ctx: VolumeContext,
+    n_patches: int,
+    rng: np.random.Generator,
+    cache_state: str,
+    worker_id: int,
+    io_mode: str,
+) -> dict[str, Any]:
+    try:
+        import torch
+    except Exception as exc:
+        raise RuntimeError("torch is required for medrs backend") from exc
 
-    offsets = plane_offsets_mm.reshape(-1, 3)
-    rotated = (offsets @ rotation_matrix.T).astype(np.float32, copy=False)
-    points_world = centers[:, np.newaxis, :] + rotated[np.newaxis, :, :]
-    points_vox = world_to_voxel(points_world.reshape(-1, 3), affine_inv).reshape(centers.shape[0], 16, 16, 3)
-    sampled = sample_patches_trilinear(vol_xyz, points_vox)
-    return sampled.astype(np.float32, copy=False)
+    median, std = robust_window_stats(ctx.volume_xyz)
+    window_a = sample_window_params(rng, median, std)
+    window_b = sample_window_params(rng, median, std)
+
+    anchor_a_vox = sample_anchor_a_voxel(rng, ctx.geometry.shape_xyz, ctx.spacing_mm)
+    anchor_a_world = voxel_to_world(anchor_a_vox[np.newaxis, :], ctx.affine)[0]
+    anchor_b_world = sample_anchor_b_world(rng, anchor_a_world, ctx.geometry)
+
+    rotation_euler_deg = rng.uniform(-20.0, 20.0, size=3).astype(np.float32)
+    rotation_b = euler_xyz_to_matrix(rotation_euler_deg)
+
+    radius_a = float(rng.uniform(20.0, 30.0))
+    radius_b = float(rng.uniform(20.0, 30.0))
+    rel_coords_a = sample_points_in_sphere(rng, n_patches, radius_a)
+    rel_coords_b = sample_points_in_sphere(rng, n_patches, radius_b)
+
+    centers_a_world = anchor_a_world[np.newaxis, :] + rel_coords_a
+    centers_b_world = anchor_b_world[np.newaxis, :] + rel_coords_b
+    for idx in range(centers_a_world.shape[0]):
+        centers_a_world[idx] = clamp_world_to_volume(centers_a_world[idx], ctx.geometry)
+    for idx in range(centers_b_world.shape[0]):
+        centers_b_world[idx] = clamp_world_to_volume(centers_b_world[idx], ctx.geometry)
+
+    patches_a, patches_b = sample_asymmetric_patches(
+        volume_xyz=ctx.volume_xyz,
+        affine_inv=ctx.affine_inv,
+        centers_a_world=centers_a_world,
+        centers_b_world=centers_b_world,
+        rotation_matrix=rotation_b,
+    )
+
+    patches_a = apply_window(patches_a, wc=window_a.wc, ww=window_a.ww)
+    patches_b = apply_window(patches_b, wc=window_b.wc, ww=window_b.ww)
+
+    return {
+        "patches_a": torch.from_numpy(patches_a).unsqueeze(1).float(),
+        "patches_b": torch.from_numpy(patches_b).unsqueeze(1).float(),
+        "rel_coords_a_mm": torch.from_numpy(rel_coords_a.astype(np.float32, copy=False)),
+        "rel_coords_b_mm": torch.from_numpy(rel_coords_b.astype(np.float32, copy=False)),
+        "anchor_delta_mm_a_frame": torch.from_numpy((anchor_b_world - anchor_a_world).astype(np.float32, copy=False)),
+        "rotation_b_euler_deg": torch.from_numpy(rotation_euler_deg.astype(np.float32, copy=False)),
+        "rotation_b_matrix": torch.from_numpy(rotation_b.astype(np.float32, copy=False)),
+        "meta": {
+            "scan_id": ctx.scan_id,
+            "backend": "medrs",
+            "cache_state": cache_state,
+            "worker_id": int(worker_id),
+            "window_a": {"wc": window_a.wc, "ww": window_a.ww},
+            "window_b": {"wc": window_b.wc, "ww": window_b.ww},
+            "replacement_wait_ms_delta": 0.0,
+            "medrs_io_mode": io_mode,
+            "medrs_bridge_available": bool(bridge_available()),
+            "medrs_bridge_error": bridge_error(),
+            "medrs_path": "rust_fused_ab_sampler",
+        },
+    }
 
 
 class _MedRSIterableDataset(IterableDataset):
@@ -211,21 +274,14 @@ class _MedRSIterableDataset(IterableDataset):
                 "All currently eligible records failed."
             )
 
-        sample = build_asymmetric_sample(
+        return _build_asymmetric_sample_medrs(
             ctx=decoded.ctx,
             n_patches=self.cell_ctx.cell.n_patches,
-            device=self.cell_ctx.runtime.device,
             rng=rng,
-            backend="medrs",
             cache_state=self.cell_ctx.cell.cache_state,
             worker_id=worker_id,
-            replacement_wait_ms_delta=0.0,
-            b_extractor_batch=_medrs_bridge_patch_extractor_batch,
+            io_mode=decoded.io_mode,
         )
-        sample["meta"]["medrs_io_mode"] = decoded.io_mode
-        sample["meta"]["medrs_bridge_available"] = bool(bridge_available())
-        sample["meta"]["medrs_bridge_error"] = bridge_error()
-        return sample
 
     def _single_thread_iter(self, worker_id: int):
         records = self._worker_shard(self.cell_ctx.records, worker_id, 1)
