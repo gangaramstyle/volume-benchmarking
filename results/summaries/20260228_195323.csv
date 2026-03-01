@@ -1,0 +1,2 @@
+run_id,cell_id,backend,cache_state,workers,n_patches,batch_size,warmup_batches,timed_batches,time_to_first_batch_ms,throughput_samples_per_sec,timed_wall_seconds,samples_timed,peak_cpu_rss_gb_global,peak_vram_allocated_gb,peak_vram_reserved_gb,gpu_starvation_wait_ms_total,gpu_starvation_wait_ms_mean,replacement_wait_ms_total
+20260228_195323,medrs__warm_pool__w4__n64__b4,medrs,warm_pool,4,64,4,1,5,3309.894684003666,5.14659987324221,3.8860607959795743,20,2.697063446044922,0.0,0.0,5093.217925867066,727.6025608381523,0.0

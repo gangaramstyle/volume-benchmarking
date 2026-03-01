@@ -1,0 +1,20 @@
+{
+  "backends": [
+    "custom_fused",
+    "monai",
+    "medrs"
+  ],
+  "catalog_path": "data/catalog_smoke_32.csv",
+  "cells": 24,
+  "cold_cache_mode": "approx_user_space",
+  "created_at": "2026-03-01T01:06:32.353658+00:00",
+  "device": "cpu",
+  "git_sha": "4a6c2946eaa057d0afe600d6a97130380dd4a0b7",
+  "hostname": "login03",
+  "matrix_hash": "6968ea1585796abc",
+  "matrix_path": "/vast/home/g/gangaram/volume-benchmarking/configs/matrix.fast.yaml",
+  "nsight_enabled": false,
+  "platform": "Linux-6.8.0-51-generic-x86_64-with-glibc2.39",
+  "python": "3.11.14",
+  "run_id": "20260228_195428"
+}
