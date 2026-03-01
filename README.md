@@ -89,7 +89,7 @@ vb bench summarize --input results/raw/*.jsonl
 - Nsight mode is optional (`--nsight`) and disabled by default.
 - DLProf is intentionally not used.
 - MedRS uses internal threaded workers; torch `DataLoader` process workers are disabled for this backend to avoid fork deadlocks.
-- MedRS backend requires a current `medrs_patch_bridge` build that exports `sample_asymmetric_patches` (re-run `maturin develop` after pulling bridge changes).
+- MedRS backend requires a current `medrs_patch_bridge` build that exports `sample_asymmetric_patches_fused` (re-run `maturin develop` after pulling bridge changes).
 - Runtime safety defaults in `configs/runtime.default.yaml`:
   - `data_loader_timeout_s`: DataLoader worker timeout per fetch (prevents indefinite hangs)
   - `continue_on_cell_error`: continue matrix run after per-cell failures and record `cell_error` events

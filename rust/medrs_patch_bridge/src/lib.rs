@@ -2,6 +2,7 @@ use ndarray::Array3;
 use numpy::{IntoPyArray, PyArray3, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use rayon::prelude::*;
 
 fn trilinear_sample(volume: &Array3<f32>, x: f32, y: f32, z: f32) -> f32 {
     let sx = volume.shape()[0] as isize;
@@ -41,39 +42,19 @@ fn trilinear_sample(volume: &Array3<f32>, x: f32, y: f32, z: f32) -> f32 {
     c0 * (1.0 - dz) + c1 * dz
 }
 
-#[pyfunction]
-fn sample_patches_trilinear<'py>(
-    py: Python<'py>,
-    volume_xyz: PyReadonlyArray3<'py, f32>,
-    coords_xyz: PyReadonlyArray4<'py, f32>,
-) -> PyResult<&'py PyArray3<f32>> {
-    let volume = volume_xyz.as_array().to_owned();
-    let coords = coords_xyz.as_array();
+fn nearest_sample(volume: &Array3<f32>, x: f32, y: f32, z: f32) -> f32 {
+    let sx = volume.shape()[0] as isize;
+    let sy = volume.shape()[1] as isize;
+    let sz = volume.shape()[2] as isize;
 
-    if coords.shape().len() != 4 || coords.shape()[3] != 3 {
-        return Err(PyValueError::new_err(
-            "coords_xyz must have shape (P, H, W, 3)",
-        ));
+    let xi = x.round() as isize;
+    let yi = y.round() as isize;
+    let zi = z.round() as isize;
+
+    if xi < 0 || yi < 0 || zi < 0 || xi >= sx || yi >= sy || zi >= sz {
+        return 0.0;
     }
-
-    let p = coords.shape()[0];
-    let h = coords.shape()[1];
-    let w = coords.shape()[2];
-
-    let mut out = Array3::<f32>::zeros((p, h, w));
-
-    for patch_idx in 0..p {
-        for y in 0..h {
-            for x in 0..w {
-                let cx = coords[[patch_idx, y, x, 0]];
-                let cy = coords[[patch_idx, y, x, 1]];
-                let cz = coords[[patch_idx, y, x, 2]];
-                out[[patch_idx, y, x]] = trilinear_sample(&volume, cx, cy, cz);
-            }
-        }
-    }
-
-    Ok(out.into_pyarray(py))
+    volume[[xi as usize, yi as usize, zi as usize]]
 }
 
 fn world_to_voxel(affine_inv: &ndarray::ArrayView2<f32>, wx: f32, wy: f32, wz: f32) -> (f32, f32, f32) {
@@ -83,20 +64,76 @@ fn world_to_voxel(affine_inv: &ndarray::ArrayView2<f32>, wx: f32, wy: f32, wz: f
     (vx, vy, vz)
 }
 
+fn window_params(wc: f32, ww: f32) -> (f32, f32, f32) {
+    let ww_safe = ww.max(1e-6);
+    let wmin = wc - 0.5 * ww_safe;
+    let wmax = wc + 0.5 * ww_safe;
+    let inv = 2.0 / (wmax - wmin).max(1e-6);
+    (wmin, wmax, inv)
+}
+
+fn apply_window(value: f32, wmin: f32, wmax: f32, inv: f32) -> f32 {
+    let clipped = value.clamp(wmin, wmax);
+    ((clipped - wmin) * inv) - 1.0
+}
+
 #[pyfunction]
-fn sample_asymmetric_patches<'py>(
+fn sample_patches_trilinear<'py>(
+    py: Python<'py>,
+    volume_xyz: PyReadonlyArray3<'py, f32>,
+    coords_xyz: PyReadonlyArray4<'py, f32>,
+) -> PyResult<&'py PyArray3<f32>> {
+    let volume = volume_xyz.as_array().to_owned();
+    let coords = coords_xyz.as_array().to_owned();
+
+    if coords.shape().len() != 4 || coords.shape()[3] != 3 {
+        return Err(PyValueError::new_err("coords_xyz must have shape (P, H, W, 3)"));
+    }
+
+    let p = coords.shape()[0];
+    let h = coords.shape()[1];
+    let w = coords.shape()[2];
+    let mut out = vec![0.0_f32; p * h * w];
+
+    py.allow_threads(|| {
+        out.par_chunks_mut(h * w)
+            .enumerate()
+            .for_each(|(patch_idx, out_patch)| {
+                for y in 0..h {
+                    for x in 0..w {
+                        let cx = coords[[patch_idx, y, x, 0]];
+                        let cy = coords[[patch_idx, y, x, 1]];
+                        let cz = coords[[patch_idx, y, x, 2]];
+                        out_patch[y * w + x] = trilinear_sample(&volume, cx, cy, cz);
+                    }
+                }
+            });
+    });
+
+    let out_arr = Array3::from_shape_vec((p, h, w), out)
+        .map_err(|_| PyValueError::new_err("failed to reshape trilinear output"))?;
+    Ok(out_arr.into_pyarray(py))
+}
+
+#[pyfunction]
+fn sample_asymmetric_patches_fused<'py>(
     py: Python<'py>,
     volume_xyz: PyReadonlyArray3<'py, f32>,
     affine_inv: PyReadonlyArray2<'py, f32>,
     centers_a_world: PyReadonlyArray2<'py, f32>,
     centers_b_world: PyReadonlyArray2<'py, f32>,
     rotation_matrix: PyReadonlyArray2<'py, f32>,
+    window_a_wc: f32,
+    window_a_ww: f32,
+    window_b_wc: f32,
+    window_b_ww: f32,
+    a_native_no_interp: bool,
 ) -> PyResult<(&'py PyArray3<f32>, &'py PyArray3<f32>)> {
     let volume = volume_xyz.as_array().to_owned();
-    let affine = affine_inv.as_array();
-    let centers_a = centers_a_world.as_array();
-    let centers_b = centers_b_world.as_array();
-    let rot = rotation_matrix.as_array();
+    let affine = affine_inv.as_array().to_owned();
+    let centers_a = centers_a_world.as_array().to_owned();
+    let centers_b = centers_b_world.as_array().to_owned();
+    let rot = rotation_matrix.as_array().to_owned();
 
     if affine.shape() != [4, 4] {
         return Err(PyValueError::new_err("affine_inv must have shape (4, 4)"));
@@ -117,8 +154,8 @@ fn sample_asymmetric_patches<'py>(
     }
 
     let n = centers_a.shape()[0];
-    let mut out_a = Array3::<f32>::zeros((n, 16, 16));
-    let mut out_b = Array3::<f32>::zeros((n, 16, 16));
+    let mut out_a = vec![0.0_f32; n * 16 * 16];
+    let mut out_b = vec![0.0_f32; n * 16 * 16];
 
     let extent_x = 32.0_f32;
     let extent_y = 32.0_f32;
@@ -126,46 +163,66 @@ fn sample_asymmetric_patches<'py>(
     let step_y = extent_y / 15.0_f32;
     let start_x = -0.5_f32 * extent_x;
     let start_y = -0.5_f32 * extent_y;
+    let (a_wmin, a_wmax, a_inv) = window_params(window_a_wc, window_a_ww);
+    let (b_wmin, b_wmax, b_inv) = window_params(window_b_wc, window_b_ww);
 
-    for patch_idx in 0..n {
-        let ca_x = centers_a[[patch_idx, 0]];
-        let ca_y = centers_a[[patch_idx, 1]];
-        let ca_z = centers_a[[patch_idx, 2]];
-        let cb_x = centers_b[[patch_idx, 0]];
-        let cb_y = centers_b[[patch_idx, 1]];
-        let cb_z = centers_b[[patch_idx, 2]];
+    py.allow_threads(|| {
+        out_a
+            .par_chunks_mut(16 * 16)
+            .zip(out_b.par_chunks_mut(16 * 16))
+            .enumerate()
+            .for_each(|(patch_idx, (a_patch, b_patch))| {
+                let ca_x = centers_a[[patch_idx, 0]];
+                let ca_y = centers_a[[patch_idx, 1]];
+                let ca_z = centers_a[[patch_idx, 2]];
+                let cb_x = centers_b[[patch_idx, 0]];
+                let cb_y = centers_b[[patch_idx, 1]];
+                let cb_z = centers_b[[patch_idx, 2]];
 
-        for yi in 0..16 {
-            let oy = start_y + yi as f32 * step_y;
-            for xi in 0..16 {
-                let ox = start_x + xi as f32 * step_x;
+                for yi in 0..16 {
+                    let oy = start_y + yi as f32 * step_y;
+                    for xi in 0..16 {
+                        let ox = start_x + xi as f32 * step_x;
+                        let out_idx = yi * 16 + xi;
 
-                // Anchor A: native axis-aligned plane.
-                let wa_x = ca_x + ox;
-                let wa_y = ca_y + oy;
-                let wa_z = ca_z;
-                let (va_x, va_y, va_z) = world_to_voxel(&affine, wa_x, wa_y, wa_z);
-                out_a[[patch_idx, yi, xi]] = trilinear_sample(&volume, va_x, va_y, va_z);
+                        // Anchor A: native axis-aligned path.
+                        let wa_x = ca_x + ox;
+                        let wa_y = ca_y + oy;
+                        let wa_z = ca_z;
+                        let (va_x, va_y, va_z) = world_to_voxel(&affine.view(), wa_x, wa_y, wa_z);
+                        let a_raw = if a_native_no_interp {
+                            nearest_sample(&volume, va_x, va_y, va_z)
+                        } else {
+                            trilinear_sample(&volume, va_x, va_y, va_z)
+                        };
+                        a_patch[out_idx] = apply_window(a_raw, a_wmin, a_wmax, a_inv);
 
-                // Anchor B: rotated plane.
-                let rb_x = rot[[0, 0]] * ox + rot[[0, 1]] * oy;
-                let rb_y = rot[[1, 0]] * ox + rot[[1, 1]] * oy;
-                let rb_z = rot[[2, 0]] * ox + rot[[2, 1]] * oy;
-                let wb_x = cb_x + rb_x;
-                let wb_y = cb_y + rb_y;
-                let wb_z = cb_z + rb_z;
-                let (vb_x, vb_y, vb_z) = world_to_voxel(&affine, wb_x, wb_y, wb_z);
-                out_b[[patch_idx, yi, xi]] = trilinear_sample(&volume, vb_x, vb_y, vb_z);
-            }
-        }
-    }
+                        // Anchor B: rotated + trilinear interpolation.
+                        let rb_x = rot[[0, 0]] * ox + rot[[0, 1]] * oy;
+                        let rb_y = rot[[1, 0]] * ox + rot[[1, 1]] * oy;
+                        let rb_z = rot[[2, 0]] * ox + rot[[2, 1]] * oy;
+                        let wb_x = cb_x + rb_x;
+                        let wb_y = cb_y + rb_y;
+                        let wb_z = cb_z + rb_z;
+                        let (vb_x, vb_y, vb_z) = world_to_voxel(&affine.view(), wb_x, wb_y, wb_z);
+                        let b_raw = trilinear_sample(&volume, vb_x, vb_y, vb_z);
+                        b_patch[out_idx] = apply_window(b_raw, b_wmin, b_wmax, b_inv);
+                    }
+                }
+            });
+    });
 
-    Ok((out_a.into_pyarray(py), out_b.into_pyarray(py)))
+    let out_a_arr = Array3::from_shape_vec((n, 16, 16), out_a)
+        .map_err(|_| PyValueError::new_err("failed to reshape fused A output"))?;
+    let out_b_arr = Array3::from_shape_vec((n, 16, 16), out_b)
+        .map_err(|_| PyValueError::new_err("failed to reshape fused B output"))?;
+
+    Ok((out_a_arr.into_pyarray(py), out_b_arr.into_pyarray(py)))
 }
 
 #[pymodule]
 fn medrs_patch_bridge(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sample_patches_trilinear, m)?)?;
-    m.add_function(wrap_pyfunction!(sample_asymmetric_patches, m)?)?;
+    m.add_function(wrap_pyfunction!(sample_asymmetric_patches_fused, m)?)?;
     Ok(())
 }

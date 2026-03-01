@@ -31,9 +31,31 @@ def test_rust_bridge_asymmetric_hard_fail_or_shape() -> None:
     centers_b = np.zeros((2, 3), dtype=np.float32)
     rot = np.eye(3, dtype=np.float32)
     if bridge_available():
-        pa, pb = sample_asymmetric_patches(vol, affine_inv, centers_a, centers_b, rot)
+        pa, pb = sample_asymmetric_patches(
+            vol,
+            affine_inv,
+            centers_a,
+            centers_b,
+            rot,
+            window_a_wc=0.0,
+            window_a_ww=1000.0,
+            window_b_wc=0.0,
+            window_b_ww=1000.0,
+            a_native_no_interp=True,
+        )
         assert pa.shape == (2, 16, 16)
         assert pb.shape == (2, 16, 16)
     else:
         with pytest.raises(RuntimeError, match="medrs_patch_bridge"):
-            sample_asymmetric_patches(vol, affine_inv, centers_a, centers_b, rot)
+            sample_asymmetric_patches(
+                vol,
+                affine_inv,
+                centers_a,
+                centers_b,
+                rot,
+                window_a_wc=0.0,
+                window_a_ww=1000.0,
+                window_b_wc=0.0,
+                window_b_ww=1000.0,
+                a_native_no_interp=True,
+            )

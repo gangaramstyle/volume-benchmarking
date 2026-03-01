@@ -24,7 +24,6 @@ from volume_benchmarking.geometry import (
 )
 from volume_benchmarking.payload import (
     VolumeContext,
-    apply_window,
     robust_window_stats,
     sample_window_params,
     resolve_nifti_path,
@@ -194,10 +193,12 @@ def _build_asymmetric_sample_medrs(
         centers_a_world=centers_a_world,
         centers_b_world=centers_b_world,
         rotation_matrix=rotation_b,
+        window_a_wc=window_a.wc,
+        window_a_ww=window_a.ww,
+        window_b_wc=window_b.wc,
+        window_b_ww=window_b.ww,
+        a_native_no_interp=True,
     )
-
-    patches_a = apply_window(patches_a, wc=window_a.wc, ww=window_a.ww)
-    patches_b = apply_window(patches_b, wc=window_b.wc, ww=window_b.ww)
 
     return {
         "patches_a": torch.from_numpy(patches_a).unsqueeze(1).float(),
@@ -219,6 +220,8 @@ def _build_asymmetric_sample_medrs(
             "medrs_bridge_available": bool(bridge_available()),
             "medrs_bridge_error": bridge_error(),
             "medrs_path": "rust_fused_ab_sampler",
+            "medrs_a_sampler_mode": "native_no_interp",
+            "medrs_windowing_mode": "rust_fused",
         },
     }
 
