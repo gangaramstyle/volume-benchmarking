@@ -175,8 +175,9 @@ def run_single_cell(
 
     dataset = backend.build_dataset(ctx)
     effective_loader_workers = int(cell.workers)
-    if cell.backend == "medrs":
-        # MedRS parallelism is handled inside the backend to avoid torch process deadlocks.
+    if cell.backend in {"medrs", "medrs_custom"}:
+        # MedRS-backed parallelism is handled inside backend threads to avoid
+        # torch DataLoader process deadlocks for strict medrs decode paths.
         effective_loader_workers = 0
 
     loader_kwargs: dict[str, Any] = {
